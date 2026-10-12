@@ -43,8 +43,8 @@ portal). Ask before touching any of these.
 - **Styling:** [not finalized — confirm with the team before assuming Tailwind or
   Bootstrap; do not mix both in new components]
 - **Database / auth / storage:** Supabase (Postgres + Auth + Row Level Security + Storage)
-- **AI:** Claude API — one integration handles both question generation and
-  screenshot/diagram extraction (vision + structured/tool-based output)
+- **AI:** Google Gemini API — one integration handles both question generation and
+  screenshot/diagram extraction (vision + structured output)
 - **PDF compilation:** Tectonic (self-contained LaTeX engine) + the `exam` document class,
   run as a separate service/subprocess, not inside a client-facing request handler
 - **Deployment:** Next.js app → Vercel; DB/auth/storage → Supabase; compile step →
@@ -58,7 +58,7 @@ server does:
 
 ```
 Browser → Next.js (API routes/server actions) → Supabase (data)
-                                               → Claude API (AI gen/OCR)
+                                               → Google Gemini API (AI gen/OCR)
                                                → Compile step (LaTeX → PDF)
 ```
 
@@ -183,7 +183,7 @@ chance that two people's changes collide.
 
 2. **Intake — AI Generation, Extraction & Staging** (REQ-2.x, REQ-3.x, REQ-4.x)
    Tables owned: `staging_questions`; writes into `questions` on promote.
-   Claude API integration (generation + vision/OCR), the staging review UI,
+   Google Gemini API integration (generation + vision/OCR), the staging review UI,
    the promote/discard flow, image-vs-text branching for screenshots.
 
 3. **Bank & Assembly — Repository & Blueprint Generator** (REQ-5.x, REQ-6.x)
