@@ -1,0 +1,46 @@
+name: AutoQP CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    name: Lint, Test, and Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 8
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type Check
+        # Runs tsc across all workspaces (web, compile-worker, schema)
+        run: pnpm -r run typecheck
+
+      - name: Lint
+        # Only web has a lint script; --if-present silently skips packages that don't
+        run: pnpm -r --if-present run lint
+
+      - name: Run Unit Tests
+        # Executes the Vitest suites defined in your track instructions
+        run: pnpm -r run test
+
+      # - name: Build Applications
+      #   # Verifies Next.js and compile-worker build successfully
+      #   run: pnpm -r run build
