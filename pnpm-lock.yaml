@@ -85,6 +85,9 @@ importers:
         specifier: ^3.0.2
         version: 3.7.0
     devDependencies:
+      '@eslint/eslintrc':
+        specifier: ^3.3.7
+        version: 3.3.7
       '@types/katex':
         specifier: ^0.16.7
         version: 0.16.8
