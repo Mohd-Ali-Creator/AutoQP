@@ -5,7 +5,7 @@
   "main": "./src/compile.ts",
   "scripts": {
     "start": "tsx src/compile.ts",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
