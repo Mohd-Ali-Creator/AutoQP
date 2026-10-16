@@ -3,8 +3,41 @@ import { createClient } from "../../lib/supabase/server";
 import { toCamelCase, toCamelCaseRows, toSnakeCase } from "../../lib/supabase/transform";
 import { StagingDraft } from "./generate-questions";
 
-interface ReviewOptions {
-  supabase?: any;
+export interface SupabaseQueryBuilder {
+  select: (...args: unknown[]) => SupabaseQueryBuilder & PromiseLike<{ data: unknown; error: { message: string } | null }>;
+  insert: (...args: unknown[]) => SupabaseQueryBuilder & PromiseLike<{ data: unknown; error: { message: string } | null }>;
+  update: (...args: unknown[]) => SupabaseQueryBuilder & PromiseLike<{ error: { message: string } | null }>;
+  delete: (...args: unknown[]) => SupabaseQueryBuilder & PromiseLike<{ error: { message: string } | null }>;
+  eq: (...args: unknown[]) => SupabaseQueryBuilder & PromiseLike<{ data: unknown; error: { message: string } | null }>;
+  order: (...args: unknown[]) => Promise<{ data: unknown; error: { message: string } | null }>;
+  single: () => Promise<{ data: unknown; error: { message: string } | null }>;
+}
+
+export interface SupabaseLike {
+  from: (table: string) => SupabaseQueryBuilder;
+  storage?: {
+    from: (bucket: string) => {
+      upload: (
+        path: string,
+        file: unknown,
+        opts?: Record<string, unknown>
+      ) => Promise<{ data: { path?: string } | null; error: { message: string } | null }>;
+    };
+  };
+}
+
+export interface ReviewOptions {
+  supabase?: SupabaseLike;
+}
+
+async function resolveSupabase(options?: ReviewOptions | SupabaseLike): Promise<SupabaseLike> {
+  if (options && "from" in options && typeof options.from === "function") {
+    return options as SupabaseLike;
+  }
+  if (options && "supabase" in options && options.supabase) {
+    return options.supabase;
+  }
+  return (await createClient()) as unknown as SupabaseLike;
 }
 
 /**
@@ -12,12 +45,9 @@ interface ReviewOptions {
  */
 export async function listStagingQuestions(
   subjectId: string,
-  options?: ReviewOptions | any
+  options?: ReviewOptions | SupabaseLike
 ): Promise<StagingDraft[]> {
-  const supabase =
-    options && typeof options.from === "function"
-      ? options
-      : options?.supabase ?? (await createClient());
+  const supabase = await resolveSupabase(options);
 
   const { data, error } = await supabase
     .from("staging_questions")
@@ -29,7 +59,7 @@ export async function listStagingQuestions(
     throw new Error(`Failed to list staging questions: ${error.message || JSON.stringify(error)}`);
   }
 
-  return toCamelCaseRows<StagingDraft>(data);
+  return toCamelCaseRows<StagingDraft>(data as Record<string, unknown>[]);
 }
 
 /**
@@ -38,16 +68,16 @@ export async function listStagingQuestions(
 export async function updateStagingQuestion(
   id: string,
   patch: Partial<StagingDraft>,
-  options?: ReviewOptions | any
+  options?: ReviewOptions | SupabaseLike
 ): Promise<void> {
-  const supabase =
-    options && typeof options.from === "function"
-      ? options
-      : options?.supabase ?? (await createClient());
+  const supabase = await resolveSupabase(options);
 
   // Exclude immutable database-managed columns from update payload
-  const { id: _, createdAt: __, createdBy: ___, ...allowedFields } = patch as any;
-  const updatePayload = toSnakeCase(allowedFields);
+  const allowedFields: Partial<StagingDraft> = { ...patch };
+  delete allowedFields.id;
+  delete allowedFields.createdAt;
+  delete allowedFields.createdBy;
+  const updatePayload = toSnakeCase(allowedFields as Record<string, unknown>);
 
   const { error } = await supabase
     .from("staging_questions")
@@ -64,12 +94,9 @@ export async function updateStagingQuestion(
  */
 export async function discardStagingQuestion(
   id: string,
-  options?: ReviewOptions | any
+  options?: ReviewOptions | SupabaseLike
 ): Promise<void> {
-  const supabase =
-    options && typeof options.from === "function"
-      ? options
-      : options?.supabase ?? (await createClient());
+  const supabase = await resolveSupabase(options);
 
   const { error } = await supabase
     .from("staging_questions")
@@ -89,12 +116,9 @@ export async function discardStagingQuestion(
 export async function promoteToBank(
   id: string,
   userId: string,
-  options?: ReviewOptions | any
+  options?: ReviewOptions | SupabaseLike
 ): Promise<string> {
-  const supabase =
-    options && typeof options.from === "function"
-      ? options
-      : options?.supabase ?? (await createClient());
+  const supabase = await resolveSupabase(options);
 
   // 1. Fetch draft from staging_questions
   const { data: rawDraft, error: fetchError } = await supabase
@@ -109,7 +133,7 @@ export async function promoteToBank(
     );
   }
 
-  const draft = toCamelCase<StagingDraft>(rawDraft);
+  const draft = toCamelCase<StagingDraft>(rawDraft as Record<string, unknown>);
   if (!draft) {
     throw new Error(`Failed to transform staging draft with id ${id}`);
   }
@@ -133,7 +157,7 @@ export async function promoteToBank(
   const validatedQuestion = parseQuestion(candidate);
 
   // 4. Insert into the committed questions bank
-  const dbRow = toSnakeCase(validatedQuestion);
+  const dbRow = toSnakeCase(validatedQuestion as unknown as Record<string, unknown>);
   const { error: insertError } = await supabase
     .from("questions")
     .insert([dbRow])

@@ -1,14 +1,35 @@
 import { GoogleGenAI } from "@google/genai";
-import { StagingQuestion } from "@autoqp/schema";
 import { createClient } from "../../lib/supabase/server";
 import { toCamelCase, toCamelCaseRows, toSnakeCase } from "../../lib/supabase/transform";
-import { StagingDraft } from "./generate-questions";
+import { StagingDraft, AiClientLike } from "./generate-questions";
+import { SupabaseLike } from "./staging-review";
 
 export interface ExtractOptions {
-  supabase?: any;
-  aiClient?: any;
+  supabase?: SupabaseLike;
+  aiClient?: AiClientLike;
   createdBy?: string;
   bucketName?: string;
+}
+
+interface RawExtractedItem {
+  text?: string;
+  type?: "mcq" | "numerical" | "long_answer";
+  difficulty?: "easy" | "medium" | "hard";
+  marks?: number;
+  imageRefs?: string[];
+  typeData?: Record<string, unknown>;
+  confidenceScore?: number;
+  [key: string]: unknown;
+}
+
+async function resolveSupabase(options?: ExtractOptions | SupabaseLike): Promise<SupabaseLike> {
+  if (options && "from" in options && typeof options.from === "function") {
+    return options as SupabaseLike;
+  }
+  if (options && "supabase" in options && options.supabase) {
+    return options.supabase;
+  }
+  return (await createClient()) as unknown as SupabaseLike;
 }
 
 /**
@@ -18,19 +39,17 @@ export interface ExtractOptions {
 export async function extractFromText(
   rawText: string,
   subjectId: string,
-  options?: ExtractOptions | any
+  options?: ExtractOptions | SupabaseLike
 ): Promise<StagingDraft[]> {
-  const supabase =
-    options && typeof options.from === "function"
-      ? options
-      : options?.supabase ?? (await createClient());
+  const supabase = await resolveSupabase(options);
 
   const apiKey = process.env.GEMINI_API_KEY || "";
-  const ai =
-    options?.aiClient ??
-    new GoogleGenAI({
-      apiKey: apiKey || "dummy-key-for-init",
-    });
+  const ai: AiClientLike =
+    options && "aiClient" in options && options.aiClient
+      ? options.aiClient
+      : (new GoogleGenAI({
+          apiKey: apiKey || "dummy-key-for-init",
+        }) as unknown as AiClientLike);
 
   const prompt = `
 You are an expert exam question extractor.
@@ -73,8 +92,9 @@ Return a valid JSON array of question objects without markdown wrapping:
       contents: prompt,
     });
     rawResponse = response?.text ?? "";
-  } catch (err: any) {
-    throw new Error(`AI extraction failed: ${err.message || String(err)}`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`AI extraction failed: ${msg}`);
   }
 
   let cleaned = rawResponse.trim();
@@ -82,12 +102,13 @@ Return a valid JSON array of question objects without markdown wrapping:
     cleaned = cleaned.replace(/^```[a-z]*\s*/i, "").replace(/```$/, "").trim();
   }
 
-  let parsed: any[] = [];
+  let parsed: RawExtractedItem[] = [];
   try {
-    const json = JSON.parse(cleaned);
-    parsed = Array.isArray(json) ? json : [json];
-  } catch (err: any) {
-    throw new Error(`Failed to parse extracted JSON: ${err.message}. Raw output: ${rawResponse}`);
+    const json: unknown = JSON.parse(cleaned);
+    parsed = Array.isArray(json) ? (json as RawExtractedItem[]) : [json as RawExtractedItem];
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to parse extracted JSON: ${msg}. Raw output: ${rawResponse}`);
   }
 
   const defaultUserId = "00000000-0000-0000-0000-000000000000";
@@ -105,13 +126,13 @@ Return a valid JSON array of question objects without markdown wrapping:
       typeData: item.typeData ?? {},
       source: "ocr_extracted",
       confidenceScore: typeof item.confidenceScore === "number" ? item.confidenceScore : 0.9,
-      rawAiOutput: item,
-      createdBy: options?.createdBy ?? defaultUserId,
+      rawAiOutput: item as Record<string, unknown>,
+      createdBy: options && "createdBy" in options && options.createdBy ? options.createdBy : defaultUserId,
     };
     return draft;
   });
 
-  const dbRows = draftsToInsert.map((d) => toSnakeCase(d));
+  const dbRows = draftsToInsert.map((d) => toSnakeCase(d as unknown as Record<string, unknown>));
   const { data, error } = await supabase
     .from("staging_questions")
     .insert(dbRows)
@@ -121,7 +142,7 @@ Return a valid JSON array of question objects without markdown wrapping:
     throw new Error(`Failed to insert into staging_questions: ${error.message || JSON.stringify(error)}`);
   }
 
-  return toCamelCaseRows<StagingDraft>(data);
+  return toCamelCaseRows<StagingDraft>(data as Record<string, unknown>[]);
 }
 
 /**
@@ -134,16 +155,18 @@ export async function extractFromScreenshot(
   imageBuffer: Buffer,
   mimeType: string,
   subjectId: string,
-  options?: ExtractOptions | any
+  options?: ExtractOptions | SupabaseLike
 ): Promise<StagingDraft> {
-  const supabase =
-    options && typeof options.from === "function"
-      ? options
-      : options?.supabase ?? (await createClient());
+  const supabase = await resolveSupabase(options);
 
-  const bucket = options?.bucketName ?? "question-assets";
+  const bucket =
+    options && "bucketName" in options && options.bucketName ? options.bucketName : "question-assets";
   const extension = mimeType.split("/")[1]?.replace("+xml", "") || "png";
   const storageFilePath = `${subjectId}/${crypto.randomUUID()}.${extension}`;
+
+  if (!supabase.storage) {
+    throw new Error("Supabase storage client is not available");
+  }
 
   // 1. Upload image to Supabase Storage
   const { data: uploadData, error: uploadError } = await supabase.storage
@@ -161,11 +184,12 @@ export async function extractFromScreenshot(
 
   // 2. Call Gemini Vision
   const apiKey = process.env.GEMINI_API_KEY || "";
-  const ai =
-    options?.aiClient ??
-    new GoogleGenAI({
-      apiKey: apiKey || "dummy-key-for-init",
-    });
+  const ai: AiClientLike =
+    options && "aiClient" in options && options.aiClient
+      ? options.aiClient
+      : (new GoogleGenAI({
+          apiKey: apiKey || "dummy-key-for-init",
+        }) as unknown as AiClientLike);
 
   const prompt = `
 You are an expert exam OCR and document transcription system.
@@ -211,8 +235,9 @@ Return only valid JSON matching this structure without markdown fences:
       ],
     });
     rawResponse = response?.text ?? "";
-  } catch (err: any) {
-    throw new Error(`AI vision extraction failed: ${err.message || String(err)}`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`AI vision extraction failed: ${msg}`);
   }
 
   let cleaned = rawResponse.trim();
@@ -220,12 +245,13 @@ Return only valid JSON matching this structure without markdown fences:
     cleaned = cleaned.replace(/^```[a-z]*\s*/i, "").replace(/```$/, "").trim();
   }
 
-  let parsed: any = {};
+  let parsed: RawExtractedItem = {};
   try {
-    const json = JSON.parse(cleaned);
-    parsed = Array.isArray(json) ? json[0] : json;
-  } catch (err: any) {
-    throw new Error(`Failed to parse vision response JSON: ${err.message}. Raw: ${rawResponse}`);
+    const json: unknown = JSON.parse(cleaned);
+    parsed = Array.isArray(json) ? (json[0] as RawExtractedItem) : (json as RawExtractedItem);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to parse vision response JSON: ${msg}. Raw: ${rawResponse}`);
   }
 
   const defaultUserId = "00000000-0000-0000-0000-000000000000";
@@ -242,11 +268,11 @@ Return only valid JSON matching this structure without markdown fences:
     typeData: parsed.typeData ?? {},
     source: "ocr_extracted",
     confidenceScore: typeof parsed.confidenceScore === "number" ? parsed.confidenceScore : 0.9,
-    rawAiOutput: parsed,
-    createdBy: options?.createdBy ?? defaultUserId,
+    rawAiOutput: parsed as Record<string, unknown>,
+    createdBy: options && "createdBy" in options && options.createdBy ? options.createdBy : defaultUserId,
   };
 
-  const dbRow = toSnakeCase(draft);
+  const dbRow = toSnakeCase(draft as unknown as Record<string, unknown>);
   const { data, error } = await supabase
     .from("staging_questions")
     .insert([dbRow])
@@ -256,7 +282,8 @@ Return only valid JSON matching this structure without markdown fences:
     throw new Error(`Failed to insert into staging_questions: ${error.message || JSON.stringify(error)}`);
   }
 
-  const result = toCamelCase<StagingDraft>(data?.[0]);
+  const rows = data as Record<string, unknown>[];
+  const result = toCamelCase<StagingDraft>(rows?.[0]);
   if (!result) {
     throw new Error("Failed to retrieve inserted staging question row");
   }

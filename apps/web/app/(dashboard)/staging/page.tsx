@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useTransition } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import {
@@ -14,12 +14,18 @@ import {
   AlertCircle,
   Eye,
   Check,
-  ChevronDown,
-  ChevronUp,
 } from "lucide-react";
 import { StagingQuestion } from "@autoqp/schema";
 
 export type StagingDraft = StagingQuestion;
+
+interface MCQTypeData {
+  options?: Array<{ id: string; text: string }>;
+  correctOptionId?: string;
+  expectedValue?: number;
+  tolerance?: number;
+  solution?: string;
+}
 
 /**
  * Safely parses and renders LaTeX math within text ($inline$ and $$display$$) using KaTeX.
@@ -80,29 +86,28 @@ export default function StagingSandboxPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Partial<StagingDraft>>({});
 
-  const [isPending, startTransition] = useTransition();
-
-  const fetchDrafts = async () => {
+  const fetchDrafts = useCallback(async () => {
     if (!subjectId) return;
     setLoading(true);
     try {
       const res = await fetch(`/api/staging?subjectId=${encodeURIComponent(subjectId)}`);
       if (!res.ok) {
-        const err = await res.json();
+        const err = (await res.json()) as { error?: string };
         throw new Error(err.error || "Failed to load staging questions");
       }
-      const data = await res.json();
+      const data = (await res.json()) as { questions?: StagingDraft[] };
       setDrafts(data.questions || []);
-    } catch (err: any) {
-      setNotification({ type: "error", message: err.message });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setNotification({ type: "error", message });
     } finally {
       setLoading(false);
     }
-  };
+  }, [subjectId]);
 
   useEffect(() => {
     fetchDrafts();
-  }, [subjectId]);
+  }, [fetchDrafts]);
 
   // Dismiss notification after 5s
   useEffect(() => {
@@ -130,15 +135,16 @@ export default function StagingSandboxPage() {
           prompt: genPrompt,
         }),
       });
-      const data = await res.json();
+      const data = (await res.json()) as { questions?: StagingDraft[]; error?: string };
       if (!res.ok) throw new Error(data.error || "Generation failed");
       setNotification({
         type: "success",
         message: `Successfully generated ${data.questions?.length || 0} question(s) into Staging!`,
       });
       fetchDrafts();
-    } catch (err: any) {
-      setNotification({ type: "error", message: err.message });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setNotification({ type: "error", message });
     } finally {
       setLoading(false);
     }
@@ -160,7 +166,7 @@ export default function StagingSandboxPage() {
           rawText,
         }),
       });
-      const data = await res.json();
+      const data = (await res.json()) as { questions?: StagingDraft[]; error?: string };
       if (!res.ok) throw new Error(data.error || "Extraction failed");
       setNotification({
         type: "success",
@@ -168,8 +174,9 @@ export default function StagingSandboxPage() {
       });
       setRawText("");
       fetchDrafts();
-    } catch (err: any) {
-      setNotification({ type: "error", message: err.message });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setNotification({ type: "error", message });
     } finally {
       setLoading(false);
     }
@@ -190,7 +197,7 @@ export default function StagingSandboxPage() {
         method: "POST",
         body: formData,
       });
-      const data = await res.json();
+      const data = (await res.json()) as { error?: string };
       if (!res.ok) throw new Error(data.error || "Screenshot extraction failed");
       setNotification({
         type: "success",
@@ -199,8 +206,9 @@ export default function StagingSandboxPage() {
       setSelectedFile(null);
       setImagePreview(null);
       fetchDrafts();
-    } catch (err: any) {
-      setNotification({ type: "error", message: err.message });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setNotification({ type: "error", message });
     } finally {
       setLoading(false);
     }
@@ -214,13 +222,14 @@ export default function StagingSandboxPage() {
         method: "DELETE",
       });
       if (!res.ok) {
-        const err = await res.json();
+        const err = (await res.json()) as { error?: string };
         throw new Error(err.error || "Failed to discard question");
       }
       setDrafts((prev) => prev.filter((d) => d.id !== id));
       setNotification({ type: "success", message: "Question discarded." });
-    } catch (err: any) {
-      setNotification({ type: "error", message: err.message });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setNotification({ type: "error", message });
     }
   };
 
@@ -232,7 +241,7 @@ export default function StagingSandboxPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id }),
       });
-      const data = await res.json();
+      const data = (await res.json()) as { id?: string; error?: string; details?: unknown };
       if (!res.ok) {
         const details = data.details ? ` (${JSON.stringify(data.details)})` : "";
         throw new Error((data.error || "Promotion failed") + details);
@@ -240,10 +249,11 @@ export default function StagingSandboxPage() {
       setDrafts((prev) => prev.filter((d) => d.id !== id));
       setNotification({
         type: "success",
-        message: `Question accepted into Bank! (ID: ${data.id})`,
+        message: `Question accepted into Bank! (ID: ${data.id || id})`,
       });
-    } catch (err: any) {
-      setNotification({ type: "error", message: err.message });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setNotification({ type: "error", message });
     }
   };
 
@@ -271,14 +281,15 @@ export default function StagingSandboxPage() {
         }),
       });
       if (!res.ok) {
-        const err = await res.json();
+        const err = (await res.json()) as { error?: string };
         throw new Error(err.error || "Update failed");
       }
       setEditingId(null);
       setNotification({ type: "success", message: "Changes saved." });
       fetchDrafts();
-    } catch (err: any) {
-      setNotification({ type: "error", message: err.message });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setNotification({ type: "error", message });
     }
   };
 
@@ -401,7 +412,9 @@ export default function StagingSandboxPage() {
                 <label className="block text-xs font-medium text-slate-400 mb-1">Type</label>
                 <select
                   value={genType}
-                  onChange={(e) => setGenType(e.target.value as any)}
+                  onChange={(e) =>
+                    setGenType(e.target.value as "mcq" | "numerical" | "long_answer")
+                  }
                   className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
                 >
                   <option value="mcq">MCQ</option>
@@ -415,7 +428,9 @@ export default function StagingSandboxPage() {
                 <div className="flex gap-2">
                   <select
                     value={genDifficulty}
-                    onChange={(e) => setGenDifficulty(e.target.value as any)}
+                    onChange={(e) =>
+                      setGenDifficulty(e.target.value as "easy" | "medium" | "hard")
+                    }
                     className="w-1/2 bg-slate-950 border border-slate-700 rounded-lg px-2 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
                   >
                     <option value="easy">Easy</option>
@@ -519,6 +534,7 @@ export default function StagingSandboxPage() {
 
                 {imagePreview && (
                   <div className="w-32 h-24 border border-slate-700 rounded-lg overflow-hidden flex-shrink-0 bg-slate-950">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={imagePreview} alt="Preview" className="w-full h-full object-cover" />
                   </div>
                 )}
@@ -564,7 +580,7 @@ export default function StagingSandboxPage() {
             <div className="space-y-4">
               {drafts.map((draft) => {
                 const isEditing = editingId === draft.id;
-                const mcqData = (draft.typeData as any) || {};
+                const mcqData = (draft.typeData as MCQTypeData) || {};
 
                 return (
                   <div
@@ -612,6 +628,7 @@ export default function StagingSandboxPage() {
                             </p>
                             {/* If standard URL, render img */}
                             {draft.imageRefs[0].startsWith("http") && (
+                              /* eslint-disable-next-line @next/next/no-img-element */
                               <img
                                 src={draft.imageRefs[0]}
                                 alt="Diagram asset"
@@ -698,7 +715,12 @@ export default function StagingSandboxPage() {
                             <label className="block text-xs font-semibold text-slate-400 mb-1">Type</label>
                             <select
                               value={editForm.type || "mcq"}
-                              onChange={(e) => setEditForm({ ...editForm, type: e.target.value as any })}
+                              onChange={(e) =>
+                                setEditForm({
+                                  ...editForm,
+                                  type: e.target.value as "mcq" | "numerical" | "long_answer",
+                                })
+                              }
                               className="w-full bg-slate-900 border border-slate-700 rounded p-1.5 text-xs text-slate-200"
                             >
                               <option value="mcq">MCQ</option>
@@ -711,7 +733,10 @@ export default function StagingSandboxPage() {
                             <select
                               value={editForm.difficulty || "medium"}
                               onChange={(e) =>
-                                setEditForm({ ...editForm, difficulty: e.target.value as any })
+                                setEditForm({
+                                  ...editForm,
+                                  difficulty: e.target.value as "easy" | "medium" | "hard",
+                                })
                               }
                               className="w-full bg-slate-900 border border-slate-700 rounded p-1.5 text-xs text-slate-200"
                             >

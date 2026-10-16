@@ -10,6 +10,58 @@ import {
   discardStagingQuestion,
   promoteToBank,
 } from "../../../modules/intake/staging-review";
+import { StagingDraft } from "../../../modules/intake/generate-questions";
+
+interface AuthSubjectAccessModule {
+  assertSubjectAccess?: (subjectId: string) => Promise<void> | void;
+}
+
+interface StagingRequestBody {
+  action?: string;
+  id?: string;
+  userId?: string;
+  subjectId?: string;
+  topicId?: string;
+  topicName?: string;
+  rawText?: string;
+  imageBase64?: string;
+  mimeType?: string;
+  difficulty?: "easy" | "medium" | "hard";
+  marks?: number;
+  count?: number;
+  type?: "mcq" | "numerical" | "long_answer";
+  prompt?: string;
+  additionalPrompt?: string;
+  createdBy?: string;
+}
+
+interface StagingPatchBody {
+  id?: string;
+  patch?: Partial<StagingDraft>;
+  [key: string]: unknown;
+}
+
+interface StagingDeleteBody {
+  id?: string;
+}
+
+function handleError(err: unknown, defaultMessage: string): NextResponse {
+  const isZod =
+    typeof err === "object" &&
+    err !== null &&
+    (("name" in err && (err as { name: string }).name === "ZodError") || "issues" in err);
+  const message = err instanceof Error ? err.message : defaultMessage;
+  const status =
+    typeof err === "object" && err !== null && "status" in err && typeof (err as { status: unknown }).status === "number"
+      ? (err as { status: number }).status
+      : isZod
+        ? 422
+        : 500;
+  const details =
+    isZod && "issues" in (err as { issues: unknown }) ? (err as { issues: unknown }).issues : undefined;
+
+  return NextResponse.json({ error: message, details }, { status });
+}
 
 /**
  * Helper to optionally invoke assertSubjectAccess if implemented in auth track.
@@ -17,12 +69,14 @@ import {
 async function verifySubjectAccess(subjectId: string) {
   try {
     const authPath: string = "../../../modules/auth/subject-access";
-    const authModule: any = await import(/* @vite-ignore */ authPath).catch(() => null);
+    const authModule = (await import(/* @vite-ignore */ authPath).catch(() => null)) as AuthSubjectAccessModule | null;
     if (authModule && typeof authModule.assertSubjectAccess === "function") {
       await authModule.assertSubjectAccess(subjectId);
     }
-  } catch (err: any) {
-    if (err?.status || err?.statusCode) throw err;
+  } catch (err: unknown) {
+    if (typeof err === "object" && err !== null && ("status" in err || "statusCode" in err)) {
+      throw err;
+    }
     // If not implemented or other non-auth error, proceed
   }
 }
@@ -44,11 +98,8 @@ export async function GET(request: NextRequest) {
 
     const questions = await listStagingQuestions(subjectId);
     return NextResponse.json({ questions });
-  } catch (err: any) {
-    return NextResponse.json(
-      { error: err.message || "Failed to list staging questions" },
-      { status: err.status || 500 }
-    );
+  } catch (err: unknown) {
+    return handleError(err, "Failed to list staging questions");
   }
 }
 
@@ -81,7 +132,7 @@ export async function POST(request: NextRequest) {
     }
 
     // JSON requests
-    const body = await request.json();
+    const body = (await request.json()) as StagingRequestBody;
     const action = body.action;
 
     if (body.subjectId) {
@@ -139,19 +190,15 @@ export async function POST(request: NextRequest) {
     });
 
     return NextResponse.json({ questions }, { status: 201 });
-  } catch (err: any) {
-    const isZod = err?.name === "ZodError" || err?.issues;
-    return NextResponse.json(
-      { error: err.message || "Failed to process staging request", details: isZod ? err.issues : undefined },
-      { status: isZod ? 422 : err.status || 500 }
-    );
+  } catch (err: unknown) {
+    return handleError(err, "Failed to process staging request");
   }
 }
 
 // PATCH /api/staging
 export async function PATCH(request: NextRequest) {
   try {
-    const body = await request.json();
+    const body = (await request.json()) as StagingPatchBody;
     const id = body.id;
     const patch = body.patch || body;
 
@@ -161,11 +208,8 @@ export async function PATCH(request: NextRequest) {
 
     await updateStagingQuestion(id, patch);
     return NextResponse.json({ success: true });
-  } catch (err: any) {
-    return NextResponse.json(
-      { error: err.message || "Failed to update staging question" },
-      { status: err.status || 500 }
-    );
+  } catch (err: unknown) {
+    return handleError(err, "Failed to update staging question");
   }
 }
 
@@ -176,8 +220,8 @@ export async function DELETE(request: NextRequest) {
     let id = searchParams.get("id");
 
     if (!id) {
-      const body = await request.json().catch(() => ({}));
-      id = body?.id;
+      const body = (await request.json().catch(() => ({}))) as StagingDeleteBody;
+      id = body?.id || null;
     }
 
     if (!id) {
@@ -186,10 +230,7 @@ export async function DELETE(request: NextRequest) {
 
     await discardStagingQuestion(id);
     return NextResponse.json({ success: true });
-  } catch (err: any) {
-    return NextResponse.json(
-      { error: err.message || "Failed to discard staging question" },
-      { status: err.status || 500 }
-    );
+  } catch (err: unknown) {
+    return handleError(err, "Failed to discard staging question");
   }
 }

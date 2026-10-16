@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { extractFromText, extractFromScreenshot } from "./extract-from-input";
+import { SupabaseLike } from "./staging-review";
 
 const mockGenerateContent = vi.fn();
 vi.mock("@google/genai", () => {
@@ -219,6 +220,7 @@ describe("extract-from-input", () => {
     it("throws an error if storage upload fails", async () => {
       const dummyBuffer = Buffer.from("fake-png");
       const mockSupabase = {
+        from: vi.fn(),
         storage: {
           from: vi.fn().mockReturnValue({
             upload: vi.fn().mockResolvedValue({
@@ -231,7 +233,7 @@ describe("extract-from-input", () => {
 
       await expect(
         extractFromScreenshot(dummyBuffer, "image/png", dummySubjectId, {
-          supabase: mockSupabase,
+          supabase: mockSupabase as unknown as SupabaseLike,
         })
       ).rejects.toThrow(/Storage upload failed: Storage bucket access denied/);
     });

@@ -2,6 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 import { StagingQuestion } from "@autoqp/schema";
 import { createClient } from "../../lib/supabase/server";
 import { toCamelCaseRows, toSnakeCase } from "../../lib/supabase/transform";
+import { SupabaseLike } from "./staging-review";
 
 export type StagingDraft = StagingQuestion;
 
@@ -18,9 +19,39 @@ export interface QuestionGenParams {
   createdBy?: string;
 }
 
-interface GenerateOptions {
-  supabase?: any;
-  aiClient?: any;
+export interface AiClientLike {
+  models: {
+    generateContent: (params: {
+      model: string;
+      contents: unknown;
+    }) => Promise<{ text?: string | null }>;
+  };
+}
+
+export interface GenerateOptions {
+  supabase?: SupabaseLike;
+  aiClient?: AiClientLike;
+}
+
+interface RawQuestionOutput {
+  text?: string;
+  type?: "mcq" | "numerical" | "long_answer";
+  difficulty?: "easy" | "medium" | "hard";
+  marks?: number;
+  imageRefs?: string[];
+  typeData?: Record<string, unknown>;
+  confidenceScore?: number;
+  [key: string]: unknown;
+}
+
+async function resolveSupabase(options?: GenerateOptions | SupabaseLike): Promise<SupabaseLike> {
+  if (options && "from" in options && typeof options.from === "function") {
+    return options as SupabaseLike;
+  }
+  if (options && "supabase" in options && options.supabase) {
+    return options.supabase;
+  }
+  return (await createClient()) as unknown as SupabaseLike;
 }
 
 /**
@@ -29,19 +60,17 @@ interface GenerateOptions {
  */
 export async function generateQuestions(
   params: QuestionGenParams,
-  options?: GenerateOptions | any
+  options?: GenerateOptions | SupabaseLike
 ): Promise<StagingDraft[]> {
-  const supabase =
-    options && typeof options.from === "function"
-      ? options
-      : options?.supabase ?? (await createClient());
+  const supabase = await resolveSupabase(options);
 
   const apiKey = process.env.GEMINI_API_KEY || "";
-  const ai =
-    options?.aiClient ??
-    new GoogleGenAI({
-      apiKey: apiKey || "dummy-key-for-init",
-    });
+  const ai: AiClientLike =
+    options && "aiClient" in options && options.aiClient
+      ? options.aiClient
+      : (new GoogleGenAI({
+          apiKey: apiKey || "dummy-key-for-init",
+        }) as unknown as AiClientLike);
 
   const questionTypeInstruction = params.type
     ? `All questions must be of type "${params.type}".`
@@ -88,8 +117,9 @@ Each object must follow this structure:
       contents: promptText,
     });
     rawResponseText = response?.text ?? "";
-  } catch (err: any) {
-    throw new Error(`AI generation failed: ${err.message || String(err)}`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`AI generation failed: ${msg}`);
   }
 
   // Sanitize and parse JSON response
@@ -98,12 +128,13 @@ Each object must follow this structure:
     cleaned = cleaned.replace(/^```[a-z]*\s*/i, "").replace(/```$/, "").trim();
   }
 
-  let parsedQuestions: any[] = [];
+  let parsedQuestions: RawQuestionOutput[] = [];
   try {
-    const parsed = JSON.parse(cleaned);
-    parsedQuestions = Array.isArray(parsed) ? parsed : [parsed];
-  } catch (err: any) {
-    throw new Error(`Failed to parse AI question output: ${err.message}. Raw output: ${rawResponseText}`);
+    const parsed: unknown = JSON.parse(cleaned);
+    parsedQuestions = Array.isArray(parsed) ? (parsed as RawQuestionOutput[]) : [parsed as RawQuestionOutput];
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to parse AI question output: ${msg}. Raw output: ${rawResponseText}`);
   }
 
   const defaultUserId = "00000000-0000-0000-0000-000000000000";
@@ -121,13 +152,13 @@ Each object must follow this structure:
       typeData: q.typeData ?? {},
       source: "ai_generated",
       confidenceScore: typeof q.confidenceScore === "number" ? q.confidenceScore : 1.0,
-      rawAiOutput: q,
+      rawAiOutput: q as Record<string, unknown>,
       createdBy: params.createdBy ?? defaultUserId,
     };
     return draft;
   });
 
-  const rowsToInsert = draftsToInsert.map((d) => toSnakeCase(d));
+  const rowsToInsert = draftsToInsert.map((d) => toSnakeCase(d as unknown as Record<string, unknown>));
 
   const { data, error } = await supabase
     .from("staging_questions")
@@ -138,5 +169,5 @@ Each object must follow this structure:
     throw new Error(`Failed to insert into staging_questions: ${error.message || JSON.stringify(error)}`);
   }
 
-  return toCamelCaseRows<StagingDraft>(data);
+  return toCamelCaseRows<StagingDraft>(data as Record<string, unknown>[]);
 }
